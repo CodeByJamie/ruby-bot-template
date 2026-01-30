@@ -40,4 +40,5 @@ Before you begin, ensure you have the following installed:
     ```bash
     ruby index.rb
     ```
-> [!TIP] > Please note: That everytime you update the logic of your code, you do **not need to run -r**. You only need to add the flag if you have update the command data, such as the name, description or added options.
+> [!TIP] 
+> Please note: That everytime you update the logic of your code, you do **not need to run -r**. You only need to add the flag if you have update the command data, such as the name, description or added options.
