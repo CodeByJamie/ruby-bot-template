@@ -9,7 +9,7 @@ class ExtendedClient < Discordrb::Bot
     # Initialise the client
     def initialize
 
-        if ENV["CLIENT_TOKEN"].empty? || ENV["CLIENT_ID"].empty?
+        if File.exist?(".env") == false || ENV["CLIENT_TOKEN"].empty? || ENV["CLIENT_ID"].empty?
             Logger.notification(LogType::WARNING, "Environmental Variables have not been set correctly in the .env file!")
             exit 1
         end
@@ -26,158 +26,181 @@ class ExtendedClient < Discordrb::Bot
         @buttons = {}
         @menus = {}
         @modals = {}
+        @autocomplete = {}
     end
 
-    # Loader for all the modules required
-    def loadModules()
+    def loadModules
+        # Build the absolute path to the src folder
+        # Format the path so there are no conflicts on windows (back-slashing)
+        srcPath = File.join(__dir__, "src").gsub(/\\/, '/');
+        
+        # Create a search pattern to look in all the required modules
+        files = Dir.glob(File.join(srcPath, "{commands,events,interactions}/**/*.rb"));
 
-        # Initialise a "loaded" module counter (purely for logging)
-        totalModules = 0
-
-        # Build the path to the source file
-        srcPath = File.join(__dir__, "src").tr("\\", "/")
-
-        # Scan all the module folders for .rb files
-        files = Dir.glob(File.join(srcPath, "{commands,events,interactions}/**/*.rb"))
-
-        # Exit the process if no files were found
+        # Check if there are no files are found
         if files.empty?
-            Logger.notification(LogType::CRITICAL, "No files were found in the specified modules.")
+            Logger.notification(LogType::CRITICAL, "No available modules to load.");
             exit 1
         end
+    
+        totalModules = files.length;
 
-        # Loop through all of the files and cache them
+        # Loop through each file to cache them
         files.each do |file|
             begin
-                formattedFile = file.tr("\\", "/")
-                # Dynamically import the fle
-                load formattedFile
+                # Load the file relatively
+                load file
 
-                # Convert the file name into the className
-                className = File.basename(formattedFile, ".rb").split('_').map(&:capitalize).join
+                # Fetch the className of each Module
+                className = File.read(file).split[1];
 
-                if Object.const_defined?(className)                             
-                    # Create a new instance of the module
+                # Check if the class instance exists
+                if Object.const_defined?(className)
                     component = Object.const_get(className).new
                 else
-                    Logger.notification(LogType::WARNING, "Class #{className} not found in #{formattedFile}")
+                    totalModules -= 1;
+                    Logger.notification(LogType::WARNING, "Skipped module #{className}, as it does not exist.");
                     next
                 end
 
-                # Split the file path into it's category and name
-                relativePath = formattedFile.sub("#{srcPath}/", "").split("/")
-                category = relativePath.find{ |dir| ["interactions", "commands", "events"].include?(dir) }
+                relativePath = file.split("src/")[1];
+                category = relativePath.split("/")[0];
 
-                # A case function for specific modules
+                # puts "path: #{relativePath} | category: #{category}"
+
                 case category
-                    # Handles modules that are in the "commands" directory
+                    # Cache the command found
                     when "commands"
-                        # Check if the loaded command follows the specific structure
                         if component.respond_to?(:name) && component.name
-
-                            # Cache the loaded command to the client
                             @commands[component.name] = component
-                            totalModules += 1
                         else
-                            # Throw a notification if the file does not follow the format
-                            Logger.notification(LogType::WARNING, "Skipped #{className}: Missing @name attribute.")
+                            totalModules -= 1
+                            Logger.notification(LogType::WARNING, "Skipped module #{className} as it is missing the @name attribute.");
                         end
 
-                    # Handles modules that are in the "interactions" directory
-                    when "interactions"
-                        # Determine which interaction needs to be loaded "Buttons", "Modals" or "Menus"
-                        subModule = relativePath.find{ |int| ["buttons", "menus", "modals"].include?(int) }
-
-                        # Cache the loaded interaction to the client
-                        instance_variable_get("@#{subModule}")[component.name] = component
-                        totalModules += 1
-
+                    # Execute the event found
                     when "events"
-                        # execute the event
-                        component.execute(self)
-                        totalModules += 1
-                end
+                        component.execute(self);
+                    
+                    when "interactions"
+                        # Determine the type of component (Buttons, Modals etc)
+                        subModule = relativePath.split("/")[1];
 
-            # If an error occurred during the loading process, display it
+                        # Dynamically cache the interaction
+                        instance_variable_get("@#{subModule}")[component.name] = component;
+                end
             rescue => error
-                Logger.error("Failed to load #{file}", error)
+                totalModules -= 1;
+                Logger.error("Failed to load #{relativePath}", error);
             end
         end
-        Logger.notification(LogType::SYSTEM, "Loaded #{totalModules} modules.")
+
+        Logger.notification(LogType::SYSTEM, "Successfully cached #{totalModules}/#{files.length} modules.");
     end
 
-    # Function to handle any incoming interactions
-    def handleInteractions()
-        # Detect when an interaction is created
+    # Function to register commands
+    def registerCommands
+        body = @commands.map do |name, cmd|
+            data = {
+                name: name,
+                description: cmd.description
+            };
+
+            if cmd.respond_to?(:options)
+                data[:options] = cmd.options;
+            end
+
+            data
+        end
+
+        begin
+
+            # Check if a guild ID was defined in the env
+            if ENV["GUILD_ID"]
+                Discordrb::API::Application.bulk_overwrite_guild_commands(self.token, ENV["CLIENT_ID"], ENV["GUILD_ID"], body)
+            else
+                Discordrb::API::Application.bulk_overwrite_global_commands(self.token, ENV["CLIENT_ID"], body)
+            end
+            Logger.notification(LogType::SYSTEM, "Successfully registered #{@commands.size} commands.");
+        rescue  => error
+            Logger.error("Failed to register the commands to discord.", error);
+            puts error
+        end
+    end
+
+    # Function to handle interactions
+    def handleInteractions
+        # Listen for any interaction emitted
         self.interaction_create do |event|
+            interaction = event.interaction
 
-            case event.interaction.type
-                # Handle when the interaction is a command
+            # Handle which interaction was emitted
+            case interaction.type
+                # Slash Command
                 when 2
+                    # Fetch the command from the bots cache
+                    command = @commands[event.interaction.data["name"]];
 
-                    # Fetch the command name
-                    commandName = event.interaction.data["name"] 
-            
-                    # Fetch the command from the cache
-                    command = @commands[commandName]
-
-                    # If the command exists then execute it
+                    # If command exists => execute it
                     if command
                         begin
-                            command.execute(event)
-                        
-                        # If an error occurred => throw the error
+                            command.execute(interaction);
                         rescue => error
-                                Logger.error("Command Execution Failed", error)
-                                event.respond(content: "Sorry an unexpected error occurred when executing the command. Please contact the developer.", ephemeral: true)
+                            Logger.error("Command Execution Failed.", error);
+                            interaction.respond(content: "Sorry, there was a problem executing the command.");
                         end
                     else
-                        Logger.notification(LogType::SYSTEM, "Command: /#{commandName} was not found in the cache.");
-                        event.respond(content: "Command not found. If this was a mistake, please contact the developer.", ephemeral: true)
+                        Logger.notification(LogType::WARNING, "Command not found in the cache.");
+                        interaction.respond(content: "Command not found in the cache.");
                     end
 
-                # Handle if the interaction is a MessageComponent ("buttons" or "menus") (type 3)
+                # Message Components
                 when 3
-                        # Fetch the custom id from the interaction
-                        custom_id = event.interaction.data["custom_id"]
-
-                        # Fetch the module from the cache
-                        @buttons[custom_id]&.execute(event) || @menus[custom_id]&.execute(event)
-                
-                # Handle if the interaction is a Modal Submit (type 5)
-                when 5
-                    custom_id = event.interaction.data["custom_id"]
-                    modal = @modals[custom_id]
-
-                    if modal
-                        modal.execute(event)
-                    else
-                        Logger.notification(LogType::SYSTEM, "Modal ID: #{custom_id} not found in the cache.")
+                    # Fetch the custom id for the message component
+                    customId = interaction.data["custom_id"]
+                    begin
+                        @buttons[customId]&.execute(interaction) || @menus[customId]&.execute(interaction)
+                    rescue => error
+                        Logger.error("Failed to execute #{customId}.", error);
                     end
-            end
-        end
-    end 
+                
+                # Autocomplete Options
+                when 4
+                    
+                    # Find the autocomplete 
+                    handler = @autocomplete[interaction.data["name"]]
 
-    # Function to register commands onto Discord
-    def registerCommands()
+                    puts "handler: #{handler}"
+                    if handler
+                        begin
+                            handler.execute(interaction)
+                        rescue => error
+                            Logger.error("Autocomplete Failed.", error)
+                        end
+                    end
 
-        # Handle when the client is ready
-        self.ready do |event|
-            # Map through the commands to register them
-            @commands.each do |name, cmd|
-                self.register_application_command(
-                    name.to_sym, 
-                    cmd.description || "No description", 
-                )
+                # Modal Submit
+                when 5
+                    modal = @modals[interaction.data["custom_id"]]
+                    if modal
+                        modal.execute(interaction);
+                    else
+                        Logger.notification(LogType::SYSTEM, "Modal Not found in the cache.");
+                    end
+
             end
-            Logger.notification(LogType::SYSTEM, "Registered #{@commands.size} commands locally.")
         end
     end
 end
 
 # Main Execution
-client = ExtendedClient.new
-client.loadModules
-client.handleInteractions
-client.registerCommands
-client.run
+client = ExtendedClient.new;
+client.loadModules;
+client.handleInteractions;
+if ARGV.include?("-r")
+    Logger.notification(LogType::SYSTEM, "Flag detected. Updating Slash Commands.");
+    client.registerCommands
+else
+    Logger.notification(LogType::SYSTEM, "Pre-cached #{client.commands.size} commands.");
+end
+client.run;

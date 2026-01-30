@@ -30,8 +30,14 @@ Before you begin, ensure you have the following installed:
     ```
 - This ensures your Gemfile.lock is up to date with the latest dependencies.
 
-3. **Running the process**
+3. **Running the process** <br />
+    There are 2 ways to run the process:
+    - **Registering Slash Commands & running the bot.**
+    ```bash
+    ruby index.rb -r
+    ```
+    - **Without -r which will run your bot**
     ```bash
     ruby index.rb
     ```
-- This will start the client up ready for development or production!
+> [!TIP] Please note: That everytime you update the logic of your code, you do **not need to run -r**. You only need to add the flag if you have update the command data, such as the name, description or added options.
